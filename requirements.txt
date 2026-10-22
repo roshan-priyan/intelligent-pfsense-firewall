@@ -1,0 +1,7 @@
+flask==3.0.0
+flask-cors==4.0.0
+paramiko==3.4.0
+apscheduler==3.10.4
+scikit-learn==1.4.0
+numpy==1.26.4
+anthropic==0.23.0

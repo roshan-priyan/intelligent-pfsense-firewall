@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environment
+venv/
+env/
+.venv/
+.env/
+
+# Environment variables
+.env
+*.env
+
+# Model files (large binary files)
+models/*.pkl
+models/*.joblib
+
+# Reports / logs
+reports.json
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Node (if frontend is upgraded to Vite/React)
+node_modules/
+dist/
+.npm
+
+# Secrets (NEVER commit these)
+secrets.json
+config.local.py

@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Intelligent pfSense Firewall Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.8.0/Recharts.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}
+button{cursor:pointer;font-family:inherit}
+input{font-family:inherit}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.sk{background:#1e2a3a;border-radius:8px;animation:pulse 1.5s infinite}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:#0f1117}
+::-webkit-scrollbar-thumb{background:#2d3748;border-radius:3px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback}=React;
+const {BarChart,Bar,XAxis,YAxis,Tooltip,ResponsiveContainer,Cell,
+       LineChart,Line,CartesianGrid,Legend,
+       RadarChart,Radar,PolarGrid,PolarAngleAxis,PolarRadiusAxis}=Recharts;
+
+const API="http://localhost:5000";
+const SEV={LOW:"#34d399",MEDIUM:"#fbbf24",HIGH:"#f97316",CRITICAL:"#f87171"};
+const SEVBG={LOW:"#064e3b",MEDIUM:"#451a03",HIGH:"#431407",CRITICAL:"#450a0a"};
+const card={background:"#161b27",borderRadius:12,padding:20,border:"1px solid #1e2a3a"};
+
+function Gauge({score,color}){
+  const r=78,cx=100,cy=105;
+  const toXY=(a,r)=>[cx+r*Math.cos(a*Math.PI/180),cy+r*Math.sin(a*Math.PI/180)];
+  const arc=(r,a1,a2)=>{
+    const[x1,y1]=toXY(a1,r),[x2,y2]=toXY(a2,r);
+    return `M${x1} ${y1} A${r} ${r} 0 ${Math.abs(a2-a1)>180?1:0} 1 ${x2} ${y2}`;
+  };
+  const angle=-210+((score||0)/100)*240;
+  return(
+    <svg width="200" height="130" viewBox="0 0 200 130">
+      <path d={arc(r,-210,30)} fill="none" stroke="#1e2a3a" strokeWidth={14} strokeLinecap="round"/>
+      <path d={arc(r,-210,angle)} fill="none" stroke={color} strokeWidth={14} strokeLinecap="round"/>
+      <text x="100" y="98" textAnchor="middle" fill={color} fontSize="34" fontWeight="700">{score}</text>
+      <text x="100" y="118" textAnchor="middle" fill="#475569" fontSize="11">/ 100</text>
+    </svg>
+  );
+}
+
+function StatCard({label,value,color="#e2e8f0"}){
+  return(
+    <div style={{background:"#161b27",borderRadius:10,padding:"14px 16px",border:"1px solid #1e2a3a"}}>
+      <div style={{fontSize:11,color:"#64748b",marginBottom:6}}>{label}</div>
+      <div style={{fontSize:26,fontWeight:600,color}}>{value??"-"}</div>
+    </div>
+  );
+}
+
+function FactorBar({label,val,color}){
+  return(
+    <div style={{marginBottom:8}}>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#94a3b8",marginBottom:4}}>
+        <span>{label}</span><span style={{color}}>{val}/10</span>
+      </div>
+      <div style={{background:"#1e2a3a",borderRadius:4,height:9}}>
+        <div style={{width:`${(val||0)*10}%`,height:9,borderRadius:4,background:color,transition:"width .6s"}}/>
+      </div>
+    </div>
+  );
+}
+
+function CT({active,payload,label}){
+  if(!active||!payload?.length)return null;
+  return(
+    <div style={{background:"#1e2a3a",border:"1px solid #2d3748",borderRadius:8,padding:"8px 12px",fontSize:12}}>
+      <div style={{color:"#94a3b8",marginBottom:4}}>{label}</div>
+      {payload.map(p=><div key={p.name} style={{color:p.color||"#e2e8f0"}}>{p.name}: {p.value}</div>)}
+    </div>
+  );
+}
+
+/* ── OVERVIEW ── */
+function Overview(){
+  const[data,setData]=useState(null);
+  const[factors,setFactors]=useState(null);
+  const[loading,setLoading]=useState(true);
+  const load=useCallback(async()=>{
+    try{
+      const[o,f]=await Promise.all([
+        fetch(`${API}/api/overview`).then(r=>r.json()),
+        fetch(`${API}/api/factors`).then(r=>r.json()),
+      ]);
+      setData(o);setFactors(f);
+    }catch(e){}
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();const t=setInterval(load,60000);return()=>clearInterval(t);},[load]);
+  const trigger=async()=>{setLoading(true);await fetch(`${API}/api/trigger`,{method:"POST"});await load();};
+  if(loading)return(<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>{[...Array(6)].map((_,i)=><div key={i} className="sk" style={{height:80}}/>)}</div>);
+  if(!data||data.error)return(
+    <div style={{...card,textAlign:"center",padding:60}}>
+      <div style={{color:"#475569",marginBottom:20,fontSize:14}}>No data yet — click to start monitoring</div>
+      <button onClick={trigger} style={{background:"#a78bfa",color:"#fff",border:"none",borderRadius:8,padding:"10px 24px",fontSize:13,fontWeight:600}}>Start Monitoring</button>
+    </div>
+  );
+  const sev=data.severity||"LOW";const color=SEV[sev];
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"grid",gridTemplateColumns:"260px 1fr",gap:16}}>
+        <div style={{...card,textAlign:"center"}}>
+          <Gauge score={data.risk_score} color={color}/>
+          <div style={{fontSize:12,color:"#94a3b8",marginBottom:8}}>Current risk score</div>
+          <span style={{background:SEVBG[sev],color,padding:"4px 16px",borderRadius:20,fontSize:13,fontWeight:600}}>{sev}</span>
+          <div style={{fontSize:10,color:"#475569",marginTop:8}}>{new Date(data.timestamp).toLocaleTimeString()}</div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+          <StatCard label="Total events"    value={data.total}      color="#a78bfa"/>
+          <StatCard label="Blocked"          value={data.blocked}    color="#f87171"/>
+          <StatCard label="Allowed"          value={data.allowed}    color="#34d399"/>
+          <StatCard label="Unique source IPs"value={data.unique_src} color="#60a5fa"/>
+          <StatCard label="Window"           value={`${data.window_min} min`} color="#94a3b8"/>
+          <StatCard label="Top port"         value={data.top_ports?.[0]||"—"} color="#fbbf24"/>
+        </div>
+      </div>
+      {factors&&(
+        <div style={card}>
+          <div style={{fontSize:13,fontWeight:500,color:"#94a3b8",marginBottom:14}}>Risk factor breakdown</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 32px"}}>
+            <FactorBar label="Exploit likelihood" val={factors.exploit_likelihood} color="#a78bfa"/>
+            <FactorBar label="Attack surface"     val={factors.attack_surface}     color="#60a5fa"/>
+            <FactorBar label="Asset criticality"  val={factors.asset_criticality}  color="#f97316"/>
+            <FactorBar label="Rule violation"     val={factors.rule_violation}     color="#f87171"/>
+            <FactorBar label="Traffic anomaly"    val={factors.traffic_anomaly}    color="#34d399"/>
+          </div>
+        </div>
+      )}
+      {data.top_ports?.length>0&&(
+        <div style={card}>
+          <div style={{fontSize:13,fontWeight:500,color:"#94a3b8",marginBottom:10}}>Top attacked ports</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+            {data.top_ports.map(p=>(<span key={p} style={{background:"#1a2035",border:"1px solid #2d3748",borderRadius:6,padding:"4px 12px",fontSize:13,fontFamily:"monospace",color:"#f97316"}}>:{p}</span>))}
+          </div>
+        </div>
+      )}
+      <button onClick={trigger} style={{background:"transparent",color:"#94a3b8",border:"1px solid #2d3748",borderRadius:8,padding:"8px 20px",fontSize:12,alignSelf:"flex-start"}}>Force refresh</button>
+    </div>
+  );
+}
+
+/* ── THREATS ── */
+function Threats(){
+  const[threats,setThreats]=useState([]);
+  const[msgs,setMsgs]=useState({});
+  const[blocking,setBlocking]=useState({});
+  const[loading,setLoading]=useState(true);
+  useEffect(()=>{
+    const load=async()=>{try{const r=await fetch(`${API}/api/threats`);setThreats(await r.json());}catch(e){}setLoading(false);};
+    load();const t=setInterval(load,60000);return()=>clearInterval(t);
+  },[]);
+  const blockIP=async(ip)=>{
+    setBlocking(b=>({...b,[ip]:true}));
+    try{
+      const r=await fetch(`${API}/api/block-ip`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ip})});
+      const d=await r.json();setMsgs(m=>({...m,[ip]:d.message}));
+    }catch(e){setMsgs(m=>({...m,[ip]:"Error"}));}
+    setBlocking(b=>({...b,[ip]:false}));
+  };
+  return(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div style={{fontSize:15,fontWeight:600}}>Detected threats</div>
+        <span style={{background:"#1e2a3a",borderRadius:20,padding:"3px 12px",fontSize:12,color:"#94a3b8"}}>{threats.length} threat{threats.length!==1?"s":""}</span>
+      </div>
+      {loading?<div style={{color:"#475569",padding:40,textAlign:"center"}}>Loading...</div>:
+       threats.length===0?(<div style={{...card,padding:60,textAlign:"center",color:"#475569"}}>No threats detected in current window ✓</div>):(
+        <div style={{...card,padding:0,overflow:"hidden"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead><tr style={{background:"#0f1624",borderBottom:"1px solid #1e2a3a"}}>
+              {["Source IP","Attack Type","Attempts","Ports","Last Seen","Risk","Action"].map(h=>(<th key={h} style={{padding:"10px 14px",textAlign:"left",fontSize:11,color:"#64748b",fontWeight:500}}>{h}</th>))}
+            </tr></thead>
+            <tbody>
+              {threats.map((t,i)=>(
+                <tr key={t.ip} style={{borderBottom:"1px solid #1a2035",background:i%2===0?"transparent":"#0f1624"}}>
+                  <td style={{padding:"11px 14px",fontFamily:"monospace",fontWeight:500}}>{t.ip}</td>
+                  <td style={{padding:"11px 14px"}}><span style={{background:"#1e2a3a",color:"#a78bfa",padding:"2px 9px",borderRadius:6,fontSize:12}}>{t.attack_type}</span></td>
+                  <td style={{padding:"11px 14px",color:"#f97316",fontWeight:600}}>{t.attempts}</td>
+                  <td style={{padding:"11px 14px"}}>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
+                      {(t.ports||[]).slice(0,5).map(p=>(<span key={p} style={{background:"#1a2035",color:"#60a5fa",borderRadius:4,padding:"1px 6px",fontSize:11,fontFamily:"monospace"}}>{p}</span>))}
+                    </div>
+                  </td>
+                  <td style={{padding:"11px 14px",color:"#64748b",fontSize:12}}>{t.last_seen}</td>
+                  <td style={{padding:"11px 14px"}}><span style={{background:SEVBG[t.risk_level],color:SEV[t.risk_level],padding:"2px 9px",borderRadius:20,fontSize:11,fontWeight:600}}>{t.risk_level}</span></td>
+                  <td style={{padding:"11px 14px"}}>
+                    {msgs[t.ip]?(<span style={{fontSize:11,color:"#34d399"}}>{msgs[t.ip].slice(0,30)}</span>):(
+                      <button onClick={()=>blockIP(t.ip)} disabled={blocking[t.ip]}
+                        style={{background:blocking[t.ip]?"#1a2035":"#450a0a",color:blocking[t.ip]?"#475569":"#f87171",border:"1px solid currentColor",borderRadius:6,padding:"4px 12px",fontSize:12}}>
+                        {blocking[t.ip]?"Blocking…":"Block IP"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+       )}
+      <div style={{marginTop:10,fontSize:11,color:"#475569"}}>* Block IP runs <code style={{color:"#86efac"}}>pfctl -t blocklist -T add &lt;ip&gt;</code> on pfSense via SSH</div>
+    </div>
+  );
+}
+
+/* ── CHARTS ── */
+function Charts(){
+  const[history,setHistory]=useState([]);
+  const[factors,setFactors]=useState(null);
+  useEffect(()=>{
+    const load=async()=>{
+      try{
+        const[h,f]=await Promise.all([fetch(`${API}/api/history?n=24`).then(r=>r.json()),fetch(`${API}/api/factors`).then(r=>r.json())]);
+        setHistory(h);setFactors(f);
+      }catch(e){}
+    };
+    load();const t=setInterval(load,60000);return()=>clearInterval(t);
+  },[]);
+  const hist=history.map(r=>({time:new Date(r.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}),score:r.risk_score,blocked:r.blocked,total:r.total,sev:r.severity}));
+  const radar=factors?[{f:"Exploit",v:factors.exploit_likelihood*10},{f:"Surface",v:factors.attack_surface*10},{f:"Criticality",v:factors.asset_criticality*10},{f:"Rule Viol.",v:factors.rule_violation*10},{f:"Anomaly",v:factors.traffic_anomaly*10}]:[];
+  const st={fontSize:13,fontWeight:500,color:"#94a3b8",marginBottom:14};
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={card}>
+        <div style={st}>Risk score history</div>
+        {hist.length===0?<div style={{color:"#475569",textAlign:"center",padding:30}}>No history yet — trigger a cycle</div>:(
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={hist} margin={{top:5,right:5,left:-25,bottom:0}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e2a3a" vertical={false}/>
+              <XAxis dataKey="time" tick={{fill:"#64748b",fontSize:10}} axisLine={false} tickLine={false}/>
+              <YAxis domain={[0,100]} tick={{fill:"#64748b",fontSize:10}} axisLine={false} tickLine={false}/>
+              <Tooltip content={<CT/>} cursor={{fill:"rgba(255,255,255,0.03)"}}/>
+              <Bar dataKey="score" radius={[3,3,0,0]} name="Risk">{hist.map((d,i)=><Cell key={i} fill={SEV[d.sev]||"#64748b"}/>)}</Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+        <div style={{display:"flex",gap:16,marginTop:8,justifyContent:"center"}}>
+          {Object.entries(SEV).map(([s,c])=>(<div key={s} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#64748b"}}><div style={{width:10,height:10,borderRadius:2,background:c}}/>{s}</div>))}
+        </div>
+      </div>
+      {hist.length>0&&(
+        <div style={card}>
+          <div style={st}>Events over time</div>
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={hist} margin={{top:5,right:5,left:-25,bottom:0}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e2a3a" vertical={false}/>
+              <XAxis dataKey="time" tick={{fill:"#64748b",fontSize:10}} axisLine={false} tickLine={false}/>
+              <YAxis tick={{fill:"#64748b",fontSize:10}} axisLine={false} tickLine={false}/>
+              <Tooltip content={<CT/>}/><Legend wrapperStyle={{fontSize:12,color:"#64748b"}}/>
+              <Line dataKey="total" stroke="#a78bfa" strokeWidth={2} dot={false} name="Total"/>
+              <Line dataKey="blocked" stroke="#f87171" strokeWidth={2} dot={false} name="Blocked"/>
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+      {radar.length>0&&(
+        <div style={card}>
+          <div style={st}>Risk factor radar</div>
+          <ResponsiveContainer width="100%" height={240}>
+            <RadarChart data={radar} margin={{top:10,right:30,bottom:10,left:30}}>
+              <PolarGrid stroke="#1e2a3a"/>
+              <PolarAngleAxis dataKey="f" tick={{fill:"#94a3b8",fontSize:12}}/>
+              <PolarRadiusAxis angle={90} domain={[0,100]} tick={{fill:"#475569",fontSize:10}}/>
+              <Radar name="Score" dataKey="v" stroke="#a78bfa" fill="#a78bfa" fillOpacity={0.2} strokeWidth={2}/>
+            </RadarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── AI PAGE ── */
+function AIPage(){
+  const[data,setData]=useState(null);
+  const[copied,setCopied]=useState(false);
+  useEffect(()=>{
+    const load=async()=>{try{const r=await fetch(`${API}/api/ai-fix`);setData(await r.json());}catch(e){}};
+    load();const t=setInterval(load,60000);return()=>clearInterval(t);
+  },[]);
+  const copy=()=>{if(data?.fix){navigator.clipboard.writeText(data.fix);setCopied(true);setTimeout(()=>setCopied(false),2000);}};
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{fontSize:15,fontWeight:600}}>AI Security Advisor</div>
+      <div style={{fontSize:12,color:"#475569"}}>Powered by Claude — activates on HIGH / CRITICAL severity</div>
+      <div style={card}>
+        <div style={{fontSize:12,color:"#64748b",marginBottom:10}}>What is happening</div>
+        <div style={{borderLeft:"3px solid #a78bfa",paddingLeft:14,fontSize:14,color:"#cbd5e1",lineHeight:1.7}}>{data?.explanation||"Waiting for HIGH/CRITICAL event or add Anthropic API key in Settings."}</div>
+      </div>
+      <div style={card}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <div style={{fontSize:12,color:"#64748b"}}>Recommended fix (pfSense)</div>
+          <button onClick={copy} style={{background:"transparent",border:"1px solid #2d3748",color:copied?"#34d399":"#94a3b8",borderRadius:6,padding:"4px 12px",fontSize:12}}>{copied?"Copied!":"Copy"}</button>
+        </div>
+        <pre style={{background:"#0d1117",borderRadius:8,padding:14,fontFamily:"monospace",fontSize:13,color:"#86efac",whiteSpace:"pre-wrap",border:"1px solid #1e2a3a"}}>{data?.fix||"# No fix generated yet"}</pre>
+      </div>
+      <div style={{...card,background:"#0d1117",border:"1px solid #1e3a2a"}}>
+        <div style={{fontSize:12,color:"#34d399",fontWeight:500,marginBottom:8}}>pfSense note</div>
+        <div style={{fontSize:12,color:"#64748b",lineHeight:1.6}}>Commands use <code style={{color:"#86efac"}}>pfctl</code> — pfSense native packet filter. For permanent rules: <strong style={{color:"#94a3b8"}}>Firewall → Rules → Add</strong>. The Block IP button in Threats runs these via SSH automatically.</div>
+      </div>
+    </div>
+  );
+}
+
+/* ── SETTINGS ── */
+function SettingsPage(){
+  const[form,setForm]=useState({});
+  const[saving,setSaving]=useState(false);
+  const[msg,setMsg]=useState("");
+  const[testMsg,setTestMsg]=useState("");
+  const[testing,setTesting]=useState(false);
+  useEffect(()=>{fetch(`${API}/api/settings`).then(r=>r.json()).then(setForm);},[]);
+  const save=async()=>{
+    setSaving(true);setMsg("");
+    try{const r=await fetch(`${API}/api/settings`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(form)});const d=await r.json();setMsg(d.message||"Saved");}
+    catch(e){setMsg("Error: "+e.message);}
+    setSaving(false);
+  };
+  const testSSH=async()=>{
+    setTesting(true);setTestMsg("Testing SSH...");
+    try{const r=await fetch(`${API}/api/test-ssh`);const d=await r.json();setTestMsg(d.success?`✓ ${d.message} (${d.lines_received} lines)`:`✗ ${d.message}`);}
+    catch(e){setTestMsg("✗ Cannot reach backend");}
+    setTesting(false);
+  };
+  const F=({k,label,type="text",ph=""})=>(
+    <div style={{marginBottom:14}}>
+      <label style={{display:"block",fontSize:12,color:"#64748b",marginBottom:5}}>{label}</label>
+      {type==="checkbox"?(
+        <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
+          <input type="checkbox" checked={!!form[k]} onChange={e=>setForm(f=>({...f,[k]:e.target.checked}))}/>
+          <span style={{fontSize:13,color:"#94a3b8"}}>{form[k]?"Demo mode ON (simulated logs)":"Demo mode OFF (real pfSense SSH)"}</span>
+        </label>
+      ):(
+        <input type={type} value={form[k]??""} placeholder={ph}
+          onChange={e=>setForm(f=>({...f,[k]:type==="number"?Number(e.target.value):e.target.value}))}
+          style={{width:"100%",background:"#0d1117",border:"1px solid #2d3748",borderRadius:8,padding:"8px 12px",color:"#e2e8f0",fontSize:13,outline:"none"}}/>
+      )}
+    </div>
+  );
+  return(
+    <div style={{maxWidth:520}}>
+      <div style={{fontSize:15,fontWeight:600,marginBottom:16}}>Settings</div>
+      <div style={card}>
+        <div style={{fontSize:13,color:"#94a3b8",marginBottom:14,paddingBottom:8,borderBottom:"1px solid #1e2a3a"}}>pfSense connection</div>
+        <F k="fw_host"     label="pfSense IP address" ph="192.168.1.1"/>
+        <F k="fw_user"     label="SSH username"       ph="admin"/>
+        <F k="fw_password" label="SSH password"       type="password"/>
+        <F k="demo_mode"   label="Demo mode"          type="checkbox"/>
+        <button onClick={testSSH} disabled={testing}
+          style={{background:"#1e2a3a",color:"#94a3b8",border:"1px solid #2d3748",borderRadius:6,padding:"7px 16px",fontSize:12,marginTop:4}}>
+          {testing?"Testing…":"Test SSH Connection"}
+        </button>
+        {testMsg&&<div style={{marginTop:8,fontSize:12,color:testMsg.startsWith("✓")?"#34d399":"#f87171"}}>{testMsg}</div>}
+      </div>
+      <div style={{...card,marginTop:14}}>
+        <div style={{fontSize:13,color:"#94a3b8",marginBottom:14,paddingBottom:8,borderBottom:"1px solid #1e2a3a"}}>AI integration (optional)</div>
+        <div style={{fontSize:12,color:"#475569",marginBottom:12}}>Enables Claude AI fix suggestions for HIGH/CRITICAL alerts.</div>
+        {form.has_api_key&&<div style={{fontSize:12,color:"#34d399",marginBottom:10}}>✓ API key is set</div>}
+        <F k="anthropic_key" label="Anthropic API key" type="password" ph="sk-ant-..."/>
+        <F k="interval_min"  label="Collection interval (minutes)" type="number"/>
+      </div>
+      <div style={{marginTop:16,display:"flex",alignItems:"center",gap:12}}>
+        <button onClick={save} disabled={saving}
+          style={{background:"#a78bfa",color:"#1a1040",border:"none",borderRadius:8,padding:"10px 24px",fontSize:13,fontWeight:600,opacity:saving?.7:1}}>
+          {saving?"Saving…":"Save settings"}
+        </button>
+        {msg&&<span style={{fontSize:12,color:"#34d399"}}>{msg}</span>}
+      </div>
+      <div style={{...card,marginTop:20,background:"#0d1117"}}>
+        <div style={{fontSize:13,color:"#94a3b8",marginBottom:10}}>pfSense setup checklist</div>
+        <ol style={{fontSize:12,color:"#64748b",lineHeight:2.2,paddingLeft:18}}>
+          <li>System → Advanced → Admin Access → <strong style={{color:"#94a3b8"}}>Enable SSH ✔</strong></li>
+          <li>Status → System Logs → Settings → <strong style={{color:"#94a3b8"}}>Log packets ✔</strong></li>
+          <li>Enter your pfSense IP above</li>
+          <li>Turn off demo mode → Save → Test SSH</li>
+          <li>If test passes → your system is live!</li>
+        </ol>
+      </div>
+    </div>
+  );
+}
+
+/* ── LIVE BADGE ── */
+function LiveBadge(){
+  const[on,setOn]=useState(true);
+  useEffect(()=>{const t=setInterval(()=>setOn(x=>!x),1200);return()=>clearInterval(t);},[]);
+  return(<div style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#94a3b8"}}><div style={{width:6,height:6,borderRadius:"50%",background:on?"#34d399":"#1d4d3a",transition:"background .4s"}}/>LIVE</div>);
+}
+
+/* ── MAIN APP ── */
+const TABS=[{id:"overview",label:"Overview"},{id:"threats",label:"Threats"},{id:"charts",label:"Analytics"},{id:"ai",label:"AI Advisor"},{id:"settings",label:"Settings"}];
+
+function App(){
+  const[tab,setTab]=useState("overview");
+  const[status,setStatus]=useState(null);
+  useEffect(()=>{
+    const load=async()=>{try{const r=await fetch(`${API}/api/status`);setStatus(await r.json());}catch(e){}};
+    load();const t=setInterval(load,30000);return()=>clearInterval(t);
+  },[]);
+  return(
+    <div style={{minHeight:"100vh"}}>
+      <div style={{background:"#161b27",borderBottom:"1px solid #1e2a3a",padding:"0 24px",display:"flex",alignItems:"center",justifyContent:"space-between",height:54}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{width:8,height:8,borderRadius:"50%",background:status?.demo_mode?"#fbbf24":"#34d399",boxShadow:`0 0 8px ${status?.demo_mode?"#fbbf24":"#34d399"}`}}/>
+          <span style={{fontWeight:700,fontSize:15,color:"#a78bfa"}}>Intelligent pfSense Firewall Monitor</span>
+          {status&&<span style={{fontSize:11,color:"#475569"}}>{status.demo_mode?"DEMO MODE":status.fw_host} · {status.reports} reports</span>}
+        </div>
+        <LiveBadge/>
+      </div>
+      <div style={{background:"#161b27",borderBottom:"1px solid #1e2a3a",padding:"0 24px",display:"flex",gap:2}}>
+        {TABS.map(t=>(<button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"10px 16px",border:"none",background:"transparent",fontSize:13,fontWeight:500,cursor:"pointer",color:tab===t.id?"#a78bfa":"#64748b",borderBottom:tab===t.id?"2px solid #a78bfa":"2px solid transparent",transition:"all .2s"}}>{t.label}</button>))}
+      </div>
+      <div style={{padding:24,maxWidth:1100,margin:"0 auto"}}>
+        {tab==="overview"&&<Overview/>}
+        {tab==="threats"&&<Threats/>}
+        {tab==="charts"&&<Charts/>}
+        {tab==="ai"&&<AIPage/>}
+        {tab==="settings"&&<SettingsPage/>}
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
